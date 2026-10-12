@@ -4,7 +4,7 @@
 same candles through four linked views: **recurrence, wavelet, candle surface and
 phase space**. Everything runs on your machine in a quiet white interface.
 
-![Workspace](marketing/04-workspace.png)
+
 
 > LumenSpace is a research tool. It never places trades. Forecasts and surface
 > scenarios are experimental, and the evaluation panel reports held-out results

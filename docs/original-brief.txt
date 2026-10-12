@@ -1,0 +1,299 @@
+PROGRAMMER BRIEF: PRICE TRANSFORM TERMINAL
+(working title; the owner will pick a final name)
+
+====================================================================
+1. WHAT THIS IS
+====================================================================
+A price terminal that looks and feels like TradingView, but where the
+same price data can be viewed in OTHER SPACES (phase space, wavelet
+scalogram, Laplace domain, recurrence plot, topology, etc.).
+
+It reads price data from CSV files and from live MetaTrader 5 (MT5).
+It uses two analysis windows, 14 minutes and 42 minutes, as the basic
+unit for computing transforms, features and predictions.
+
+The goal is insight: look at price in a different space, see structure
+that is invisible on a normal candle chart, and test whether that
+structure helps predict what comes next.
+
+Everything the user sees must be linked: crosshair, zoom and selected
+time in the price chart must be reflected in every transform view and
+the other way round.
+
+====================================================================
+2. DATA INPUT
+====================================================================
+2.1 CSV
+- Drag and drop or file picker, plus a path field.
+- Columns: time, open, high, low, close, volume (tick volume is fine).
+  Accept common variants (MT5 export with <DATE> <TIME> columns,
+  "Date,Time" split columns, "Timestamp" in ISO or unix seconds).
+- Auto-detect delimiter (comma, tab, semicolon) and header.
+- User chooses the timezone of the file. Internally store everything
+  in UTC, display in a selectable timezone (default: America/New_York).
+- Validate: sort by time, drop duplicates, report gaps and bad rows
+  in a small import report. Never silently fix data.
+
+2.2 MT5 LIVE
+- Use the official MetaTrader5 Python package (copy_rates_from_pos,
+  copy_rates_range, copy_ticks_*). Note: it only runs on Windows with
+  the MT5 terminal installed and logged in.
+- Settings: symbol (e.g. XAUUSD), timeframe (M1 default, M5, etc.),
+  history bars to load, live update on/off.
+- Live mode: poll or stream new bars/ticks and update the chart and
+  all transform views incrementally. The forming (unclosed) candle must
+  be clearly marked and excluded from any prediction or training.
+- Connection status indicator, auto-reconnect, clear error messages
+  (terminal not running, symbol not in Market Watch, etc.).
+- Build a DataSource interface (CsvSource, Mt5Source) so more sources
+  can be added later. Everything downstream only sees a normalized
+  OHLCV dataframe.
+
+2.3 STORAGE
+- Cache loaded and live data locally (Parquet or SQLite) so reopening
+  is fast and live history can be extended.
+
+====================================================================
+3. THE 14 AND 42 MINUTE WINDOWS
+====================================================================
+- Two configurable windows, default 14 min and 42 min (42 = 3 x 14).
+- Window alignment must be configurable. Default: anchored to
+  America/New_York clock time (windows start at fixed boundaries of
+  the NY day), with the option to use rolling windows ending at the
+  current bar.
+- On the price chart, draw the windows as subtle shaded bands or
+  vertical separators, with a toggle for 14, 42, or both.
+- Each transform view is computed in two modes:
+    a) per-window: one result for each 14 or 42 minute window,
+    b) rolling: sliding window ending at each bar.
+- Window length in bars depends on timeframe (on M1, 14 min = 14
+  bars). If the timeframe is larger than the window, show a warning.
+
+====================================================================
+4. TRANSFORM SPACES (MODULES)
+====================================================================
+Each module is a plugin with: compute(window_data, params) -> result,
+a default view, a parameter panel, and a list of summary metrics that
+can be plotted as a time series under the price chart.
+
+Input series choices for every module: close, typical price
+(H+L+C)/3, log return, high-low range, or any custom column. Optional
+detrend / normalize step (z-score per window, log).
+
+4.1 PHASE SPACE (Takens delay embedding)
+- Vectors [x(i), x(i+tau), ..., x(i+(m-1)tau)].
+- View: 2D and 3D trajectory (rotate, zoom), colored by time, current
+  point highlighted, optional trail length.
+- Parameters: tau, m. Helpers to estimate them: mutual information
+  (tau) and false nearest neighbours (m), with a plot of each.
+- Metrics over time: trajectory length / speed, largest Lyapunov
+  exponent estimate, correlation dimension estimate.
+
+4.2 RECURRENCE PLOT AND RQA
+- Distance matrix between phase-space vectors, thresholded by epsilon
+  (fixed, or percent of max distance, or fixed recurrence rate).
+- View: recurrence plot heatmap with crosshair linked to time.
+- Metrics over time: recurrence rate, determinism (DET), laminarity,
+  average diagonal length, entropy of diagonal lengths.
+
+4.3 WAVELET (CWT scalogram, plus DWT/MODWT decomposition)
+- Scalogram heatmap (time x scale/period), selectable wavelet (Morlet
+  default, Mexican hat, etc.), cone of influence shown.
+- DWT/MODWT: level-by-level components shown as stacked lines, with
+  optional denoised price overlay on the main chart.
+- Metrics: energy per scale band, dominant period over time.
+
+4.4 FOURIER / SPECTROGRAM
+- FFT per window and STFT spectrogram, with a windowing function
+  choice. Metrics: dominant frequency, spectral entropy, low/high
+  frequency power ratio.
+
+4.5 LAPLACE DOMAIN
+This is the most research-oriented module. Version 1 spec:
+- Discrete Laplace transform of the windowed series
+      F(s) = sum over n of x[n] * exp(-s * n * dt),  s = sigma + j*omega
+  evaluated on a grid of sigma (growth/decay rate) and omega
+  (frequency). The user must see the effect of sigma, so sigma is an
+  explicit axis, not fixed at 0 (sigma = 0 reduces to Fourier).
+- View: magnitude heatmap over (sigma, omega), plus a 3D surface
+  option. Mark the strongest peaks.
+- Optional: fit a small damped-sinusoid / pole model to the window
+  (e.g. Prony or matrix pencil) and plot the estimated poles in the
+  s-plane (real part = decay, imaginary part = oscillation). Track the
+  pole positions over time as metrics.
+- Keep the code modular, the owner expects to experiment with
+  variants here (see papers in section 9).
+
+4.4 TOPOLOGY (persistent homology)
+- Sliding-window point cloud from delay embedding, Vietoris-Rips
+  persistent homology (use giotto-tda, ripser or gudhi).
+- Views: persistence diagram, barcode, persistence landscape.
+- Metrics over time: L1 / L2 norm of the persistence landscape and
+  its rolling variance and low-frequency spectral density. This
+  follows Gidea and Katz, "Topological Data Analysis of Financial Time
+  Series: Landscapes of Crashes".
+
+4.5 OPTIONAL (phase 2)
+- Empirical mode decomposition + Hilbert transform (instantaneous
+  phase and frequency), Hilbert envelope.
+- Gramian angular field and Markov transition field images.
+- Path signature features.
+
+====================================================================
+5. TERMINAL UI (TRADINGVIEW-LIKE)
+====================================================================
+5.1 MAIN PRICE CHART
+- Candlestick (plus line, bar, Heikin-Ashi optional), volume pane.
+- Smooth zoom and pan: mouse wheel zoom on time axis, drag to pan,
+  drag on price axis to scale, double click to reset, keyboard
+  shortcuts. Must stay fast with 100k+ bars.
+- Crosshair with price and time labels on the axes, and an OHLC
+  readout box that follows the cursor.
+- Timeframe switcher, symbol label, timezone selector, dark and
+  light theme (dark default).
+- Logarithmic and percent scale options.
+
+5.2 LAYOUT
+- Main price chart on top; below it a resizable stack of panes. Each
+  pane is either a transform view or a metric time series.
+- User can add, remove, reorder and resize panes, and save/load the
+  layout as a named workspace.
+- Pane types: 2D heatmap (scalogram, recurrence plot, Laplace map),
+  3D view (phase space, Laplace surface), line chart of a metric,
+  persistence diagram.
+
+5.3 LINKING (very important)
+- One shared time cursor: moving the crosshair on any time-based pane
+  moves it on all of them.
+- Hovering a point in the phase-space trajectory, a pixel of the
+  recurrence plot, or a column of the scalogram highlights the matching
+  bar(s) on the price chart. And the reverse.
+- Selecting a time range on the price chart (drag select) recomputes
+  the transform views for that range.
+- "Follow live" button: all views track the latest bar.
+
+5.4 DRAWING TOOLS (on the price chart, and on 2D transform views
+    where it makes sense)
+- Trend line, ray, horizontal line, vertical line, rectangle (box),
+  and text note. Fibonacci retracement and parallel channel are nice
+  to have.
+- Select, move, resize, delete, color/width/style, lock, undo/redo.
+- Magnet mode (snap to OHLC).
+- Rectangle boxes must be anchored in (time, price) coordinates so
+  they stay in place when zooming and panning, and show price range
+  and time span (and bar count) as labels.
+- Drawings are saved per symbol and timeframe and restored on reload.
+  Export and import as JSON.
+
+5.5 TOOLBAR
+- Left vertical toolbar for drawing tools (like TradingView), top bar
+  for symbol, timeframe, data source, window selection (14 / 42),
+  transform picker and settings.
+
+====================================================================
+6. PREDICTION USING THE 14 AND 42 MINUTE WINDOWS
+====================================================================
+6.1 TARGET (configurable, defaults below)
+- For each window W in {14, 42}: given everything up to the close of
+  window W, predict the NEXT window of the same length:
+    a) direction (up/down) of next-window close vs its open,
+    b) next-window high-low range (volatility),
+    c) optionally, which of two user-drawn or computed levels is hit
+       first.
+
+6.2 FEATURES
+- The summary metrics from all transform modules computed on the 14
+  and 42 minute windows (and the 14-in-42 relationship: each 42 window
+  contains three 14 windows, so features can compare them).
+- Features must be selectable per run.
+
+6.3 MODELS
+- Start simple and interpretable: logistic / linear models and
+  tree-based models (e.g. gradient boosting or ExtraTrees), with a
+  feature importance view.
+- Model code behind an interface so others can be plugged in.
+
+6.4 STRICT EVALUATION RULES
+- No future leakage, ever: features at time t use only closed bars up
+  to t. Unit tests must prove it (shifting future data must not change
+  past features).
+- Walk-forward / time-ordered split, with an untouched final test set.
+- Always show baselines next to the model: random, "same direction as
+  previous window", and a no-transform-features baseline. A model is
+  only reported as useful if it beats these out of sample, with
+  confidence intervals.
+- Show a confusion matrix, hit rate, and calibration of probabilities.
+- The prediction panel shows, for the current live window, the
+  predicted direction and probability for the next 14 and 42 minute
+  windows, drawn as a ghost band on the price chart, plus the model's
+  recent out-of-sample accuracy so the user never sees a prediction
+  without its track record.
+
+6.3 NOTE FOR THE PROGRAMMER
+The transform metrics from the literature mostly describe regimes and
+stress (for example crash early-warning). They are not proven
+direction predictors. Build the system so the user can find out
+honestly whether they help, rather than assuming they do.
+
+====================================================================
+7. SUGGESTED TECH (programmer may choose differently)
+====================================================================
+- Python backend: FastAPI + WebSocket for live updates; numpy, pandas,
+  scipy, PyWavelets, scikit-learn, giotto-tda or ripser; MetaTrader5
+  package for MT5.
+- Web frontend: TradingView Lightweight Charts for the main chart,
+  with a custom drawing layer (primitives / plugins) for the drawing
+  tools; Plotly.js or three.js for 3D and heatmaps; or a single
+  framework that gives all of this with less glue. Programmer decides.
+- Heavy computations (persistent homology, wavelets on long ranges) run
+  in a worker/background process with caching and a progress
+  indicator, and never freeze the UI.
+- Runs locally on the user's Windows machine (needed for MT5).
+  Packaged so it starts with one command or one shortcut.
+
+====================================================================
+8. MILESTONES
+====================================================================
+M1  Data + chart: CSV import, MT5 history and live, candlestick chart
+    with zoom, pan, crosshair, 14/42 window bands, timezone handling.
+M2  Drawing tools, workspaces, saved drawings.
+M3  Phase space + recurrence plot modules with linked cursors.
+M4  Wavelet, Fourier, Laplace modules.
+M5  Topology module.
+M6  Prediction engine with the strict evaluation rules, baselines and
+    the prediction panel.
+M7  Polish, performance with large data, packaging, documentation.
+
+Acceptance for each milestone: a short demo on a real XAUUSD M1 CSV
+and on live MT5 data, plus unit tests for data handling, windowing and
+the no-leakage rule.
+
+====================================================================
+9. REFERENCES (for the programmer and for the owner)
+====================================================================
+- Beyond the Time Domain: Recent Advances on Frequency Transforms in
+  Time Series Analysis (survey on Fourier, wavelet, Laplace), arXiv
+  2504.07099, with a linked GitHub repository.
+- Time Series Embedding Methods for Classification Tasks: A Review,
+  arXiv 2501.13392, with code at github.com/imics-lab/time-series-embedding.
+- Gidea and Katz, Topological Data Analysis of Financial Time Series:
+  Landscapes of Crashes, arXiv 1703.04385 (implemented with giotto-tda
+  in a public tutorial).
+- Complexity-based Financial Stress Evaluation, arXiv 2212.02281
+  (Takens embedding + recurrence quantification on financial data).
+- Laplace-Net (learning dynamical systems with external forcing) and
+  ARTEMIS (Laplace Neural Operator for market dynamics, arXiv
+  2603.18107) for Laplace-domain ideas.
+
+====================================================================
+10. OPEN QUESTIONS FOR THE OWNER AND PROGRAMMER
+====================================================================
+1. Window anchoring: NY-clock aligned (default) or rolling only?
+2. Which symbols and timeframes first (XAUUSD M1 assumed)?
+3. Should tick data be supported, or only bars?
+4. Which transform module should be built and polished first after
+   phase space (Laplace is the most novel but least established)?
+5. Prediction targets: are direction and range of the next window
+   enough, or are there other targets to add?
+6. Is a web UI acceptable, or must it be a native desktop app?
+7. Should drawings and workspaces sync between machines?

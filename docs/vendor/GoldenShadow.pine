@@ -1,0 +1,382 @@
+//@version=5
+indicator("GoldenShadow", overlay=true, max_lines_count=500, max_boxes_count=10, max_bars_back=5000)
+// The chosen time zone controls the displayed dates and the Zeller calculation.
+// Window timestamps come from the symbol's selected 14- or 42-minute bars.
+string windowMode = input.string("Fast", "Time Window", options=["Fast", "Slow"], tooltip="Fast = 14 minutes; Slow = 42 minutes")
+string windowTf = windowMode == "Fast" ? "14" : "42"
+int windowMinutes = windowMode == "Fast" ? 14 : 42
+string timeZone = input.string("UTC-05:30", "Time Zone", options=["UTC-05:00", "UTC-05:30", "UTC-06:00", "UTC-07:00", "Asia/Tehran", "Etc/UTC"])
+int windowsToShow = input.int(120, "Historical Windows", minval=1, maxval=160)
+bool showTargetLines = input.bool(true, "Draw Target Lines")
+bool showWindowBoundaries = input.bool(true, "Draw Window Boundaries")
+bool showBalanceZone = input.bool(true, "Draw Balance Zone Boxes", tooltip="Project the body and full range of an earlier balance anchor across the current window.")
+int maxSearchBars = input.int(500, "Balance Zone Lookback (1m bars)", minval=2, maxval=4500)
+bool showPathStudy = input.bool(true, "Previous Window Path Study", tooltip="Measure the completed window and show the historical next-window outcomes for the same path category. Requires a 1-minute chart.")
+float lowEfficiency = input.float(0.35, "Low Efficiency At or Below", minval=0.05, maxval=0.95, step=0.05, group="Path Study")
+float rejectionFraction = input.float(0.60, "Rejected Excursion Fraction", minval=0.10, maxval=1.00, step=0.05, group="Path Study")
+float significantExcursionAtr = input.float(2.00, "Significant Excursion in 1m ATR", minval=0.05, step=0.05, group="Path Study", tooltip="An excursion must exceed this many completed 1-minute ATR units before it can be classified as a rejected move. Adjust for your market.")
+int choppyTurns = input.int(4, "Choppy Direction Changes", minval=2, maxval=40, group="Path Study")
+int minimumExamples = input.int(30, "Minimum Historical Matches", minval=5, maxval=500, group="Path Study")
+float minimumAdvantage = input.float(5.0, "Minimum Edge vs Baseline (pp)", minval=0, maxval=50, step=1, group="Path Study")
+// A longer chart bar can contain multiple selected windows. This script needs
+// at least one chart bar for each window and the completed 1-minute ATR sample.
+if not timeframe.isintraday or timeframe.in_seconds() < 60 or timeframe.in_seconds() > windowMinutes * 60
+    runtime.error("Use a time-based chart from 1 minute up to the selected window duration.")
+if (showBalanceZone or showPathStudy) and timeframe.in_seconds() != 60
+    runtime.error("Balance-zone boxes and the path study need a 1-minute chart. Disable both to use another chart timeframe.")
+f_digital_root(float value) =>
+    int number = int(math.abs(value))
+    number == 0 ? 0 : 1 + (number - 1) % 9
+f_day_of_week(int yearValue, int monthValue, int dayValue) =>
+    int adjustedYear = monthValue < 3 ? yearValue - 1 : yearValue
+    int adjustedMonth = monthValue < 3 ? monthValue + 12 : monthValue
+    int centuryYear = adjustedYear % 100
+    int century = int(math.floor(adjustedYear / 100))
+    int result = int(dayValue + math.floor(13 * (adjustedMonth + 1) / 5) + centuryYear + math.floor(centuryYear / 4) + math.floor(century / 4) - 2 * century)
+    (result % 7 + 7) % 7
+f_atr_at_window_start() =>
+    float atr1m = ta.rma(ta.tr(true), 14)
+    bool newWindow = ta.change(time(windowTf)) != 0
+    ta.valuewhen(newWindow, atr1m[1], 0)
+// Capture the last completed 1-minute ATR at each selected-window rollover.
+float atrAtWindowStart = request.security(syminfo.tickerid, "1", f_atr_at_window_start(), lookahead=barmerge.lookahead_off)
+// Previous candle data is offset, so the levels are known when the new window
+// starts. The current bar's time and time_close give exact drawing endpoints.
+[previousHigh, previousOpen, previousLow, previousClose, previousWindowTime, windowStart, windowEnd] = request.security(syminfo.tickerid, windowTf, [high[1], open[1], low[1], close[1], time[1], time, time_close], lookahead=barmerge.lookahead_on)
+float upperShadow = math.max(previousHigh - math.max(previousOpen, previousClose), 0.0)
+float lowerShadow = math.max(math.min(previousOpen, previousClose) - previousLow, 0.0)
+float safeAtr = math.max(nz(atrAtWindowStart, syminfo.mintick), syminfo.mintick)
+float zellerFraction = na
+if not na(previousWindowTime)
+    int candleYear = int(str.tonumber(str.format_time(previousWindowTime, "yyyy", timeZone)))
+    int candleMonth = int(str.tonumber(str.format_time(previousWindowTime, "MM", timeZone)))
+    int candleDay = int(str.tonumber(str.format_time(previousWindowTime, "dd", timeZone)))
+    zellerFraction := float(f_day_of_week(candleYear, candleMonth, candleDay)) / 6.0
+// These equal lowerShadow / ATR and upperShadow / ATR, respectively, plus the
+// original script's Zeller fraction. Keep its multiplier selection unchanged.
+float upStep = lowerShadow / safeAtr + zellerFraction
+float downStep = upperShadow / safeAtr + zellerFraction
+float originPrice = previousClose
+float roundedAtrMultiplier = math.ceil(atrAtWindowStart / 0.25) * 0.25
+int rawTargetIndex = na(roundedAtrMultiplier) ? na : int(math.round(roundedAtrMultiplier / 0.25))
+int targetIndex = na(rawTargetIndex) ? na : math.max(0, math.min(84, rawTargetIndex))
+float selectedMultiplier = na(targetIndex) ? na : targetIndex * 0.25
+// Place the drawing at the same tradable tick price shown in the table.
+float selectedTargetUp = math.round_to_mintick(originPrice + upStep * selectedMultiplier)
+float selectedTargetDown = math.round_to_mintick(originPrice - downStep * selectedMultiplier)
+bool ready = not na(atrAtWindowStart) and not na(previousWindowTime) and not na(windowStart) and not na(windowEnd) and not na(selectedTargetUp) and not na(selectedTargetDown)
+// Each drawing uses absolute time and price coordinates. force_overlay sends
+// the lines to the main chart pane and its price scale.
+// Each line is limited to its own window: [start, end].
+var line[] upLines = array.new_line()
+var line[] downLines = array.new_line()
+var line[] startLines = array.new_line()
+var line currentEndLine = na
+var int lastDrawnWindowStart = na
+if ready and (na(lastDrawnWindowStart) or windowStart != lastDrawnWindowStart)
+    if showTargetLines
+        line upLine = line.new(windowStart, selectedTargetUp, windowEnd, selectedTargetUp, xloc=xloc.bar_time, color=color.lime, width=2, force_overlay=true)
+        line downLine = line.new(windowStart, selectedTargetDown, windowEnd, selectedTargetDown, xloc=xloc.bar_time, color=color.red, width=2, force_overlay=true)
+        array.push(upLines, upLine)
+        array.push(downLines, downLine)
+        if array.size(upLines) > windowsToShow
+            line.delete(array.shift(upLines))
+            line.delete(array.shift(downLines))
+    if showWindowBoundaries
+        float verticalBottom = math.min(selectedTargetUp, selectedTargetDown)
+        float verticalTop = math.max(selectedTargetUp, selectedTargetDown) + syminfo.mintick
+        line startLine = line.new(windowStart, verticalBottom, windowStart, verticalTop, xloc=xloc.bar_time, extend=extend.both, color=color.new(color.gray, 65), style=line.style_dotted, force_overlay=true)
+        array.push(startLines, startLine)
+        if array.size(startLines) > windowsToShow
+            line.delete(array.shift(startLines))
+    lastDrawnWindowStart := windowStart
+// The one extra boundary marks the scheduled end of the CURRENT window. Once
+// that window becomes history, its end is the next window's start boundary.
+if ready and showWindowBoundaries
+    float verticalBottom = math.min(selectedTargetUp, selectedTargetDown)
+    float verticalTop = math.max(selectedTargetUp, selectedTargetDown) + syminfo.mintick
+    if na(currentEndLine)
+        currentEndLine := line.new(windowEnd, verticalBottom, windowEnd, verticalTop, xloc=xloc.bar_time, extend=extend.both, color=color.new(color.gray, 25), style=line.style_dashed, force_overlay=true)
+    else
+        line.set_x1(currentEndLine, windowEnd)
+        line.set_x2(currentEndLine, windowEnd)
+        line.set_y1(currentEndLine, verticalBottom)
+        line.set_y2(currentEndLine, verticalTop)
+// Find the most recent pre-window balance anchor. No current-window bar
+// participates. Project its body and full range into the current window.
+bool windowChanged = not na(windowStart[1]) and windowStart != windowStart[1]
+int barsSinceWindowOpen = ta.barssince(windowChanged)
+// Each path uses the first 1-minute open, subsequent 1-minute closes and the
+// 1-minute highs/lows. A turn is a change in the sign of successive close moves.
+// Classification is descriptive; the next-window rates are empirical counts.
+f_path_class(float efficiency, float netChange, float highExcursionAtr, float lowExcursionAtr, float upperGiveback, float lowerGiveback, int turns) =>
+    bool rejectedUp = highExcursionAtr >= significantExcursionAtr and upperGiveback >= rejectionFraction
+    bool rejectedDown = lowExcursionAtr >= significantExcursionAtr and lowerGiveback >= rejectionFraction
+    bool chop = efficiency <= lowEfficiency and turns >= choppyTurns
+    int result = 0
+    if na(efficiency)
+        result := 0
+    else if chop
+        result := netChange > syminfo.mintick / 2 ? 4 : netChange < -syminfo.mintick / 2 ? 5 : 6
+    else if rejectedUp and rejectedDown
+        result := 3
+    else if rejectedUp
+        result := 1
+    else if rejectedDown
+        result := 2
+    else if efficiency <= lowEfficiency
+        result := netChange > syminfo.mintick / 2 ? 7 : netChange < -syminfo.mintick / 2 ? 8 : 9
+    else
+        result := netChange > syminfo.mintick / 2 ? 10 : netChange < -syminfo.mintick / 2 ? 11 : 9
+    result
+f_path_name(int code) =>
+    switch code
+        1 => "Upper move rejected"
+        2 => "Lower move rejected"
+        3 => "Both sides rejected"
+        4 => "Choppy / net up"
+        5 => "Choppy / net down"
+        6 => "Choppy / flat"
+        7 => "Indirect / net up"
+        8 => "Indirect / net down"
+        9 => "Flat / mixed"
+        10 => "Efficient / net up"
+        11 => "Efficient / net down"
+        => "No movement"
+// Mutable statistics for the window under construction.
+var int pathStart = na
+var int pathEnd = na
+var bool fullPathStart = false
+var int pathBars = 0
+var float pathOpen = na
+var float pathClose = na
+var float pathHigh = na
+var float pathLow = na
+var float pathTravel = 0.0
+var float pathAtr = na
+var int pathTurns = 0
+var int lastDirection = 0
+// The latest completed-window observation is frozen throughout the new window.
+var int priorPathStart = na
+var float priorNet = na
+var float priorEfficiency = na
+var float priorUpExcAtr = na
+var float priorDownExcAtr = na
+var float priorUpGiveback = na
+var float priorDownGiveback = na
+var int priorTurns = na
+var int priorClass = na
+// pendingClass is the pattern that was known BEFORE the window now ending.
+// Only after that window ends can its outcome join the historical sample.
+var int pendingClass = na
+var int[] exampleCount = array.new_int(12, 0)
+var int[] upCount = array.new_int(12, 0)
+var int[] downCount = array.new_int(12, 0)
+var float[] nextMoveSum = array.new_float(12, 0.0)
+var int baselineCount = 0
+var int baselineUp = 0
+var int baselineDown = 0
+if showPathStudy and not na(windowStart)
+    if na(pathStart) or pathStart != windowStart
+        // Exclude the first partial window on the chart and gaps/truncated
+        // windows: both ends must be observed on consecutive 1-minute bars.
+        bool validCompleted = fullPathStart and pathBars >= 2 and not na(pathAtr) and time_close[1] == pathEnd and windowStart == pathEnd
+        if validCompleted
+            float netChange = pathClose - pathOpen
+            float efficiency = pathTravel > 0 ? math.min(1.0, math.abs(netChange) / pathTravel) : na
+            float upExcursion = math.max(0.0, pathHigh - pathOpen)
+            float downExcursion = math.max(0.0, pathOpen - pathLow)
+            float upGiveback = upExcursion > 0 ? math.min(1.0, math.max(0.0, (pathHigh - pathClose) / upExcursion)) : na
+            float downGiveback = downExcursion > 0 ? math.min(1.0, math.max(0.0, (pathClose - pathLow) / downExcursion)) : na
+            int completedClass = f_path_class(efficiency, netChange, upExcursion / pathAtr, downExcursion / pathAtr, nz(upGiveback, 0), nz(downGiveback, 0), pathTurns)
+            if not na(pendingClass)
+                array.set(exampleCount, pendingClass, array.get(exampleCount, pendingClass) + 1)
+                array.set(nextMoveSum, pendingClass, array.get(nextMoveSum, pendingClass) + netChange)
+                baselineCount += 1
+                if netChange > syminfo.mintick / 2
+                    array.set(upCount, pendingClass, array.get(upCount, pendingClass) + 1)
+                    baselineUp += 1
+                else if netChange < -syminfo.mintick / 2
+                    array.set(downCount, pendingClass, array.get(downCount, pendingClass) + 1)
+                    baselineDown += 1
+            priorPathStart := pathStart
+            priorNet := netChange
+            priorEfficiency := efficiency
+            priorUpExcAtr := upExcursion / pathAtr
+            priorDownExcAtr := downExcursion / pathAtr
+            priorUpGiveback := upGiveback
+            priorDownGiveback := downGiveback
+            priorTurns := pathTurns
+            priorClass := completedClass
+            pendingClass := completedClass
+        else
+            priorPathStart := na
+            priorNet := na
+            priorEfficiency := na
+            priorUpExcAtr := na
+            priorDownExcAtr := na
+            priorUpGiveback := na
+            priorDownGiveback := na
+            priorTurns := na
+            priorClass := na
+            pendingClass := na
+        pathStart := windowStart
+        pathEnd := windowEnd
+        fullPathStart := time == windowStart
+        pathBars := 1
+        pathOpen := open
+        pathClose := close
+        pathHigh := high
+        pathLow := low
+        pathAtr := atrAtWindowStart
+        pathTravel := math.abs(close - open)
+        lastDirection := close > open ? 1 : close < open ? -1 : 0
+        pathTurns := 0
+    else
+        float step = close - pathClose
+        int direction = step > 0 ? 1 : step < 0 ? -1 : 0
+        if direction != 0
+            if lastDirection != 0 and direction != lastDirection
+                pathTurns += 1
+            lastDirection := direction
+        pathTravel += math.abs(step)
+        pathClose := close
+        pathHigh := math.max(pathHigh, high)
+        pathLow := math.min(pathLow, low)
+        pathBars += 1
+var int analyzedWindowStart = na
+var int greenCount = 0
+var int redCount = 0
+var int anchorCandleTime = na
+var int equalityCandleTime = na
+var box currentRangeBox = na
+var box currentBodyBox = na
+if barstate.islast and showBalanceZone and not na(windowStart) and not na(barsSinceWindowOpen)
+    if na(analyzedWindowStart) or analyzedWindowStart != windowStart
+        if not na(currentRangeBox)
+            box.delete(currentRangeBox)
+        if not na(currentBodyBox)
+            box.delete(currentBodyBox)
+        currentRangeBox := na
+        currentBodyBox := na
+        analyzedWindowStart := windowStart
+        greenCount := 0
+        redCount := 0
+        anchorCandleTime := na
+        equalityCandleTime := na
+        // Offset 1 is the final bar of the preceding window at rollover.
+        int anchorOffset = barsSinceWindowOpen + 1
+        for scanIndex = 0 to maxSearchBars - 1
+            int candleOffset = anchorOffset + scanIndex
+            if candleOffset > bar_index or na(time[candleOffset])
+                break
+            if scanIndex == 0
+                anchorCandleTime := time[candleOffset]
+            int differenceBefore = greenCount - redCount
+            if close[candleOffset] > open[candleOffset]
+                greenCount += 1
+            else if close[candleOffset] < open[candleOffset]
+                redCount += 1
+            // The first historical return to balance defines the anchor.
+            if differenceBefore != 0 and greenCount == redCount
+                equalityCandleTime := time[candleOffset]
+                color bodyColor = close[candleOffset] > open[candleOffset] ? color.lime : color.red
+                // Both boxes span the current window using anchor prices.
+                currentRangeBox := box.new(windowStart, high[candleOffset], windowEnd, low[candleOffset], xloc=xloc.bar_time, border_color=color.yellow, border_width=2, bgcolor=color.new(color.yellow, 88), force_overlay=true)
+                currentBodyBox := box.new(windowStart, math.max(open[candleOffset], close[candleOffset]), windowEnd, math.min(open[candleOffset], close[candleOffset]), xloc=xloc.bar_time, border_color=bodyColor, border_width=2, bgcolor=color.new(bodyColor, 55), force_overlay=true)
+                break
+var table levelsTable = table.new(position.top_left, 7, 86, bgcolor=color.white, border_width=1, border_color=color.gray)
+// One compact right-side panel. Disabled sections do not reserve blank rows.
+var table rightTable = table.new(position.top_right, 2, 8 + (showBalanceZone ? 3 : 0) + (showPathStudy ? 13 : 0), bgcolor=color.black, border_width=1, border_color=color.gray)
+if barstate.islast
+    table.cell(levelsTable, 0, 0, "Mult", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    table.cell(levelsTable, 1, 0, "ToAdd Up", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    table.cell(levelsTable, 2, 0, "Lvl Up", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    table.cell(levelsTable, 3, 0, "DR Up", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    table.cell(levelsTable, 4, 0, "ToAdd Dn", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    table.cell(levelsTable, 5, 0, "Lvl Dn", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    table.cell(levelsTable, 6, 0, "DR Dn", bgcolor=color.gray, text_color=color.black, text_size=size.small)
+    for i = 0 to 84
+        float multiplier = i * 0.25
+        float toAddUp = upStep * multiplier
+        float toAddDown = downStep * multiplier
+        float levelUp = originPrice + toAddUp
+        float levelDown = originPrice - toAddDown
+        int digitalRootUp = na(levelUp) ? na : f_digital_root(levelUp)
+        int digitalRootDown = na(levelDown) ? na : f_digital_root(levelDown)
+        table.cell(levelsTable, 0, i + 1, str.tostring(multiplier, "#.00"), bgcolor=color.white, text_color=color.black, text_size=size.small)
+        table.cell(levelsTable, 1, i + 1, str.tostring(toAddUp, "#.####"), bgcolor=color.white, text_color=color.black, text_size=size.small)
+        table.cell(levelsTable, 2, i + 1, str.tostring(levelUp, format.mintick), bgcolor=color.white, text_color=color.green, text_size=size.small)
+        table.cell(levelsTable, 3, i + 1, str.tostring(digitalRootUp), bgcolor=color.white, text_color=color.black, text_size=size.small)
+        table.cell(levelsTable, 4, i + 1, str.tostring(toAddDown, "#.####"), bgcolor=color.white, text_color=color.black, text_size=size.small)
+        table.cell(levelsTable, 5, i + 1, str.tostring(levelDown, format.mintick), bgcolor=color.white, text_color=color.red, text_size=size.small)
+        table.cell(levelsTable, 6, i + 1, str.tostring(digitalRootDown), bgcolor=color.white, text_color=color.black, text_size=size.small)
+    table.cell(rightTable, 0, 0, "ATR TARGET LEVELS", bgcolor=color.rgb(32, 73, 112), text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, 0, windowMode + " (" + str.tostring(windowMinutes) + "m)", bgcolor=color.rgb(32, 73, 112), text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, 1, "ATR at Window Start", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, 1, str.tostring(atrAtWindowStart, "#.####"), bgcolor=color.black, text_color=color.aqua, text_size=size.small)
+    table.cell(rightTable, 0, 2, "ATR Rounded Up", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, 2, str.tostring(roundedAtrMultiplier, "#.00"), bgcolor=color.black, text_color=color.yellow, text_size=size.small)
+    table.cell(rightTable, 0, 3, "Selected Mult", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, 3, str.tostring(selectedMultiplier, "#.00"), bgcolor=color.black, text_color=color.yellow, text_size=size.small)
+    table.cell(rightTable, 0, 4, "Target Level Up", bgcolor=color.black, text_color=color.lime, text_size=size.small)
+    table.cell(rightTable, 1, 4, str.tostring(selectedTargetUp, format.mintick), bgcolor=color.black, text_color=color.lime, text_size=size.normal)
+    table.cell(rightTable, 0, 5, "Target Level Down", bgcolor=color.black, text_color=color.red, text_size=size.small)
+    table.cell(rightTable, 1, 5, str.tostring(selectedTargetDown, format.mintick), bgcolor=color.black, text_color=color.red, text_size=size.normal)
+    table.cell(rightTable, 0, 6, "Window Start", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, 6, na(windowStart) ? "—" : str.format_time(windowStart, "yyyy-MM-dd HH:mm", timeZone), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, 7, "Window End", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, 7, na(windowEnd) ? "—" : str.format_time(windowEnd, "yyyy-MM-dd HH:mm", timeZone), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    if showBalanceZone
+        int counterRow = 8
+        table.cell(rightTable, 0, counterRow + 0, "BALANCE ZONE", bgcolor=color.rgb(82, 55, 116), text_color=color.white, text_size=size.small)
+        table.cell(rightTable, 1, counterRow + 0, "CURRENT " + windowMode, bgcolor=color.rgb(82, 55, 116), text_color=color.white, text_size=size.small)
+        table.cell(rightTable, 0, counterRow + 1, "Reference Time", bgcolor=color.black, text_color=color.white, text_size=size.small)
+        table.cell(rightTable, 1, counterRow + 1, na(anchorCandleTime) ? "—" : str.format_time(anchorCandleTime, "MM-dd HH:mm", timeZone), bgcolor=color.black, text_color=color.white, text_size=size.small)
+        table.cell(rightTable, 0, counterRow + 2, "Zone Source Time", bgcolor=color.black, text_color=color.yellow, text_size=size.small)
+        table.cell(rightTable, 1, counterRow + 2, na(equalityCandleTime) ? "Not found" : str.format_time(equalityCandleTime, "MM-dd HH:mm", timeZone), bgcolor=color.black, text_color=color.yellow, text_size=size.small)
+// All rates refer to NEXT windows that followed this same previous-window
+// classification. The currently open window is never used as an outcome.
+if barstate.islast and showPathStudy
+    int pathRow = 8 + (showBalanceZone ? 3 : 0)
+    int matches = na(priorClass) ? 0 : array.get(exampleCount, priorClass)
+    int upMatches = na(priorClass) ? 0 : array.get(upCount, priorClass)
+    int downMatches = na(priorClass) ? 0 : array.get(downCount, priorClass)
+    float upRate = matches > 0 ? 100.0 * upMatches / matches : na
+    float downRate = matches > 0 ? 100.0 * downMatches / matches : na
+    float baseUpRate = baselineCount > 0 ? 100.0 * baselineUp / baselineCount : na
+    float baseDownRate = baselineCount > 0 ? 100.0 * baselineDown / baselineCount : na
+    float meanNextChange = matches > 0 ? array.get(nextMoveSum, priorClass) / matches : na
+    bool favorsUp = matches >= minimumExamples and upRate > 50 and upRate > downRate and upRate - baseUpRate >= minimumAdvantage
+    bool favorsDown = matches >= minimumExamples and downRate > 50 and downRate > upRate and downRate - baseDownRate >= minimumAdvantage
+    string tendency = na(priorClass) ? "Waiting for full window" : matches < minimumExamples ? "Insufficient examples" : favorsUp ? "History leans UP" : favorsDown ? "History leans DOWN" : "No observed edge"
+    color tendencyColor = favorsUp ? color.lime : favorsDown ? color.red : color.yellow
+    string upObservation = na(priorUpExcAtr) ? "—" : str.tostring(priorUpExcAtr, "#.00") + " ATR / " + str.tostring(100 * nz(priorUpGiveback, 0), "#.0") + "% returned"
+    string downObservation = na(priorDownExcAtr) ? "—" : str.tostring(priorDownExcAtr, "#.00") + " ATR / " + str.tostring(100 * nz(priorDownGiveback, 0), "#.0") + "% returned"
+    table.cell(rightTable, 0, pathRow + 0, "PREVIOUS WINDOW PATH", bgcolor=color.rgb(28, 99, 82), text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 0, windowMode + " (" + str.tostring(windowMinutes) + "m)", bgcolor=color.rgb(28, 99, 82), text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 1, "Previous Start", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 1, na(priorPathStart) ? "—" : str.format_time(priorPathStart, "MM-dd HH:mm", timeZone), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 2, "Net Change", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 2, na(priorNet) ? "—" : str.tostring(priorNet, format.mintick), bgcolor=color.black, text_color=na(priorNet) ? color.white : priorNet > 0 ? color.lime : priorNet < 0 ? color.red : color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 3, "ER / Inefficiency", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 3, na(priorEfficiency) ? "—" : str.tostring(priorEfficiency, "#.00") + " / " + str.tostring(100 * (1 - priorEfficiency), "#.0") + "%", bgcolor=color.black, text_color=color.aqua, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 4, "Up Excursion / Giveback", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 4, upObservation, bgcolor=color.black, text_color=color.lime, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 5, "Down Excursion / Giveback", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 5, downObservation, bgcolor=color.black, text_color=color.red, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 6, "Direction Changes", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 6, na(priorTurns) ? "—" : str.tostring(priorTurns), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 7, "What Happened", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 7, na(priorClass) ? "—" : f_path_name(priorClass), bgcolor=color.black, text_color=color.yellow, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 8, "Past Matches", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 8, str.tostring(matches) + " / need " + str.tostring(minimumExamples), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 9, "Next Up / Down", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 9, matches == 0 ? "—" : str.tostring(upRate, "#.0") + "% / " + str.tostring(downRate, "#.0") + "%", bgcolor=color.black, text_color=color.aqua, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 10, "Baseline Up / Down", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 10, baselineCount == 0 ? "—" : str.tostring(baseUpRate, "#.0") + "% / " + str.tostring(baseDownRate, "#.0") + "%", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 11, "Mean Next Change", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 11, matches == 0 ? "—" : str.tostring(meanNextChange, format.mintick), bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 0, pathRow + 12, "Next Window", bgcolor=color.black, text_color=color.white, text_size=size.small)
+    table.cell(rightTable, 1, pathRow + 12, tendency, bgcolor=color.black, text_color=tendencyColor, text_size=size.small)
+plot(na, title="Drawings only", display=display.none)

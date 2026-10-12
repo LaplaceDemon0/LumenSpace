@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LumenSpace — Price research terminal</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%230f766e'/%3E%3Cpath d='M10 8v16h13' fill='none' stroke='white' stroke-width='3'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="/static/style.css" />
+    <script defer src="/vendor/plotly.js"></script>
+    <script defer src="/static/app.js"></script>
+    <script defer src="/static/integration.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="/"
+        ><span class="mark">L</span
+        ><span>LumenSpace<span class="brand-sub">RESEARCH TERMINAL</span></span></a
+      >
+      <nav>
+        <span class="active">Workspace</span
+        ><button id="openData">Data sources</button
+        ><button id="openHelp">Guide</button>
+      </nav>
+      <div class="header-end">
+        <span id="connection" class="status">Local session</span
+        ><button id="saveWorkspace" class="button small">Save workspace</button
+        ><button
+          id="openSettings"
+          class="icon-button"
+          title="Settings"
+          aria-label="Settings"
+        >
+          ⚙
+        </button>
+      </div>
+    </header>
+    <div class="shell">
+      <aside class="tool-rail" aria-label="Drawing tools">
+        <button class="tool active" data-tool="cursor" title="Cursor (V)">
+          ↖</button
+        ><button class="tool" data-tool="select" title="Select time range (S)">
+          ▧
+        </button>
+        <div class="rail-divider"></div>
+        <button class="tool" data-tool="line" title="Trend line">╱</button
+        ><button class="tool" data-tool="ray" title="Ray">↗</button
+        ><button class="tool" data-tool="horizontal" title="Horizontal line">
+          —</button
+        ><button class="tool" data-tool="vertical" title="Vertical line">
+          │</button
+        ><button class="tool" data-tool="rectangle" title="Rectangle">□</button
+        ><button class="tool" data-tool="text" title="Text note">T</button>
+        <div class="rail-divider"></div>
+        <button class="tool" id="magnet" title="Snap to OHLC">⊓</button
+        ><button class="tool" id="undo" title="Undo (Ctrl+Z)">↶</button
+        ><button class="tool" id="redo" title="Redo (Ctrl+Y)">↷</button
+        ><button
+          class="tool"
+          id="deleteDrawing"
+          title="Delete selected drawing"
+        >
+          ⌫
+        </button>
+        <div class="rail-bottom">
+          <button class="tool" id="exportDrawings" title="Export drawings">
+            ⇩</button
+          ><button class="tool" id="importDrawings" title="Import drawings">
+            ⇧
+          </button>
+        </div>
+      </aside>
+      <main>
+        <div class="workspace-heading">
+          <div>
+            <div class="eyebrow">YOUR MARKET, IN OTHER SPACES</div>
+            <h1>Price research workspace</h1>
+            <p>
+              Observe structure. Compare perspectives. Test what comes next.
+            </p>
+          </div>
+          <button id="addPane" class="button">Explore charts</button>
+        </div>
+        <section class="card price-card">
+          <div class="chart-toolbar">
+            <div class="instrument">
+              <span class="instrument-icon">Au</span>
+              <div>
+                <button id="symbolButton" class="symbol-button">
+                  XAUUSD <span>⌄</span>
+                </button>
+                <div id="sourceLabel" class="muted micro">
+                  Synthetic demo data
+                </div>
+              </div>
+            </div>
+            <div class="divider"></div>
+            <select id="timeframe" aria-label="Display timeframe">
+              <option value="1">1 minute</option>
+              <option value="5">5 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="60">1 hour</option>
+            </select>
+            <div class="segmented" id="windowChoices">
+              <button data-window="14">14m</button
+              ><button class="active" data-window="42">42m</button
+              ><button data-window="both">Both</button>
+            </div>
+            <select id="windowMode" aria-label="Window alignment">
+              <option value="aligned">NY aligned</option>
+              <option value="rolling">Rolling</option>
+            </select>
+            <div class="toolbar-spacer"></div>
+            <select id="chartStyle" aria-label="Chart style">
+              <option value="candles">Candles</option>
+              <option value="line">Line</option></select
+            ><button id="chooseWindow" class="button small">
+              Choose window
+            </button>
+            <button id="followLive" class="button small">↦ Latest</button>
+          </div>
+          <div class="chart-meta">
+            <div>
+              <span class="quote" id="quote">—</span
+              ><span class="quote-change" id="quoteChange">—</span>
+            </div>
+            <div id="ohlc" class="ohlc">Move the cursor to inspect a bar</div>
+          </div>
+          <div class="canvas-wrap">
+            <canvas
+              id="priceCanvas"
+              aria-label="Interactive price chart. Wheel to zoom, drag to pan, S to select a time range."
+            ></canvas>
+            <div class="chart-watermark">LumenSpace<span>PRICE / TIME</span></div>
+            <button id="clearSelection" class="selection-chip hidden">
+              Clear selected range ×
+            </button>
+          </div>
+          <div class="chart-footer">
+            <span id="rangeLabel">—</span
+            ><span id="selectionLabel"
+              >Scroll to zoom · drag to pan · S to select</span
+            ><select id="displayTimezone" aria-label="Display timezone">
+              <option value="America/New_York">New York · automatic DST</option>
+            </select>
+          </div>
+        </section>
+        <div class="analysis-heading">
+          <div>
+            <h2>
+              Linked research charts <span id="paneCount" class="count">0</span>
+            </h2>
+            <p id="analysisRange">
+              Computed from the latest complete 42-minute window
+            </p>
+          </div>
+          <button id="refreshAnalysis" class="text-button">
+            ↻ Refresh analysis
+          </button>
+        </div>
+        <div id="panes" class="pane-grid"></div>
+        <div class="bottom-note">
+          <span class="status-dot"></span
+          ><span id="footerStatus"
+            >Closed bars only for analysis. Training starts when you
+            choose.</span
+          ><button id="exportWorkspace" class="text-button">
+            Export workspace ↗</button
+          ><button id="loadWorkspace" class="text-button">
+            Load workspace
+          </button>
+        </div>
+      </main>
+      <aside class="inspector">
+        <div class="inspector-heading">
+          <h2>Research desk</h2>
+          <span class="tiny-tag">LOCAL</span>
+        </div>
+        <section class="desk-section">
+          <div class="section-label">ACTIVE WINDOW</div>
+          <div class="window-number" id="activeWindow">
+            42<span>minutes</span>
+          </div>
+          <div class="desk-row">
+            <span>Alignment</span
+            ><strong id="alignmentLabel">New York clock</strong>
+          </div>
+          <div class="desk-row">
+            <span>Input</span><strong id="inputLabel">Close · z-score</strong>
+          </div>
+          <div class="desk-row">
+            <span>Closed bars</span><strong id="barCount">—</strong>
+          </div>
+          <button class="text-button" id="parametersButton">
+            Adjust transform parameters ↗
+          </button>
+        </section>
+        <section class="desk-section">
+          <div class="section-label">NEXT-WINDOW RESEARCH</div>
+          <div id="forecastEmpty" class="forecast-empty">
+            <div class="empty-glyph">↗</div>
+            <h3>A hypothesis, then a test.</h3>
+            <p>
+              Choose a training range and compare a model against simple
+              baselines.
+            </p>
+          </div>
+          <div id="forecastResult" class="hidden"></div>
+          <button id="openTraining" class="button primary full">
+            Configure & train
+          </button>
+          <div id="jobProgress" class="hidden progress-area">
+            <div class="progress-track"><span id="progressBar"></span></div>
+            <div class="progress-caption">
+              <span id="progressMessage">Preparing</span
+              ><strong id="progressPercent">0%</strong>
+            </div>
+          </div>
+          <p class="micro muted">Manual training. No orders are placed.</p>
+        </section>
+        <section class="desk-section">
+          <div class="section-label">DATA QUALITY</div>
+          <div id="qualitySummary"><p class="muted">Loading data…</p></div>
+          <button id="viewReport" class="text-button">
+            View import report ↗
+          </button>
+        </section>
+        <section class="desk-section">
+          <div class="section-label">WORKSPACE</div>
+          <label class="field-label" for="workspaceName">Name</label
+          ><input id="workspaceName" value="Gold / transform study" />
+          <div class="desk-row">
+            <span>Drawings</span><strong id="drawingCount">0</strong>
+          </div>
+          <p class="micro muted">
+            Saved locally in this browser. Export JSON to move your workspace.
+          </p>
+        </section>
+        <div class="desk-bottom">LUMENSPACE <span>v1.0.1 / RESEARCH BUILD</span></div>
+      </aside>
+    </div>
+    <dialog id="modal">
+      <div class="modal-heading">
+        <h2 id="modalTitle"></h2>
+        <button id="closeModal" class="icon-button" aria-label="Close dialog">
+          ×
+        </button>
+      </div>
+      <div id="modalBody"></div>
+    </dialog>
+    <div id="toast" role="status" class="toast hidden"></div>
+    <input type="file" id="jsonFile" accept=".json" hidden />
+  </body>
+</html>

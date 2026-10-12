@@ -1,0 +1,21 @@
+Introducing LumenSpace — a local research workspace for exploring price data from multiple perspectives.
+
+The workflow starts with one question: what can we learn from this specific time window?
+
+Select a window on the chart, then inspect the same candles through four permanent, full-width charts: recurrence, wavelet, candle surface, and phase space.
+
+LumenSpace brings together:
+• CSV imports and optional Windows MT5 integration
+• New York time alignment and linked chart views
+• Recurrence row-density counts mapped to potential candle price zones
+• Surface parameter fitting, scenario simulation, and optional future-surface learning
+• GoldenShadow reference levels and an 85-rung ladder
+• A minimal white interface with drawing tools and coordinate readouts
+
+Built with Python, FastAPI, scientific computing libraries, and Plotly.
+
+This is an experimental research tool. The screenshots use synthetic demo data; they do not demonstrate trading performance.
+
+I’d love feedback from people working in data visualization, quantitative research, and Python development. Which view or feature would you explore first?
+
+#Python #DataVisualization #QuantitativeResearch #OpenSource #LumenSpace
